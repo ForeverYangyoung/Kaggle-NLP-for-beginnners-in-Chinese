@@ -99,6 +99,365 @@ if not iskaggle and not path.exists():
 ```
 
 > **提示**：你可以很方便地从Kaggle下载notebook，然后上传到其他的云服务上。所以，如果你的Kaggle GPU额度快用完了，可以试试这个方法！
+>
+
+````markdown
+---
+## 导入数据与探索性数据分析 (EDA)
+
+```python
+# 如果在Kaggle环境中，则设置数据路径并安装datasets库
+if iskaggle:
+    path = Path('../input/us-patent-phrase-to-phrase-matching')
+    ! pip install -q datasets
+````
+
+在NLP数据集中，文档通常以两种主要形式存在：
+
+  * **较长的文档**: 每个文档一个文本文件，通常按类别分在不同的文件夹中。
+  * **较短的文档**: 在一个CSV文件中，每一行代表一个文档（或文档对，以及可选的元数据）。
+
+我们来看看我们的数据是什么样的。在Jupyter Notebook中，你可以在一行的开头使用 `!` 来执行任何bash/shell命令，并用 `{}` 来包含Python变量，就像这样：
+
+```python
+!ls {path}
+```
+
+```text
+sample_submission.csv  test.csv  train.csv
+```
+
+看来这个比赛用的是CSV文件。要打开、操作和查看CSV文件，通常最好使用 **Pandas** 库。Pandas的首席开发者在这本书中对它有精彩的讲解（这本书也是matplotlib和numpy的绝佳入门读物，我在这个notebook中都用到了这两个库）。通常，我们会将Pandas导入并简写为 `pd`。
+
+```python
+import pandas as pd
+```
+
+我们来设置一下数据的路径：
+
+```python
+df = pd.read_csv(path/'train.csv')
+```
+
+这会创建一个 `DataFrame`，它是一个带有命名列的表格，有点像数据库的表。要查看DataFrame的首尾几行以及总行数，只需输入它的名字：
+
+```python
+df
+```
+
+```text
+        id                  anchor                        target context  score
+0      37d61fd2272659b1       abatement        abatement of pollution     A47   0.50
+1      7b9652b17b68b7a4       abatement               act of abating     A47   0.75
+2      36d72442aefd8232       abatement              active catalyst     A47   0.25
+3      5296b0c19e1ce60e       abatement          eliminating process     A47   0.50
+4      54c1e3b9184cb5b6       abatement                forest region     A47   0.00
+...                 ...             ...                           ...     ...    ...
+36468  8e1386cbefd7f245  wood article                wooden article     B44   1.00
+36469  42d9e032d1cd3242  wood article                   wooden box     B44   0.50
+36470  208654ccb9e14fa3  wood article                wooden handle     B44   0.50
+36471  756ec035e694722b  wood article              wooden material     B44   0.75
+36472  8d135da0b55b8c88  wood article             wooden substrate     B44   0.50
+
+36473 rows × 5 columns
+```
+
+仔细阅读**数据集描述**对于理解每一列的用途非常重要。`DataFrame`最有用的功能之一是 `describe()` 方法：
+
+```python
+df.describe(include='object')
+```
+
+```text
+                  id         anchor                target context
+count          36473          36473                 36473   36473
+unique         36473            733                 29340     106
+top     37d61fd2272659b1  component composite coating  composition     H01
+freq                 1            152                    24     186
+```
+
+我们可以看到，在36473行数据中，有733个唯一的`anchor`，106个`context`，以及近30000个`target`。有些`anchor`非常常见，例如 "component composite coating" 出现了152次。
+
+早些时候，我建议我们可以把模型的输入表示成类似 "TEXT1: abatement; TEXT2: eliminating process" 的形式。我们还需要把`context`也加进去。在Pandas中，我们直接用 `+` 来拼接字符串：
+
+```python
+df['input'] = 'TEXT1: ' + df.context + '; TEXT2: ' + df.target + '; ANC1: ' + df.anchor
+```
+
+我们可以用标准的Python“点”符号来引用一个列（也称为`series`），或者像访问字典一样访问它。要获取前几行，使用 `head()` 方法：
+
+```python
+df.input.head()
+```
+
+```text
+0    TEXT1: A47; TEXT2: abatement of pollution; ANC...
+1    TEXT1: A47; TEXT2: act of abating; ANC1: abate...
+2    TEXT1: A47; TEXT2: active catalyst; ANC1: abat...
+3    TEXT1: A47; TEXT2: eliminating process; ANC1: ...
+4    TEXT1: A47; TEXT2: forest region; ANC1: abatement
+Name: input, dtype: object
+```
+
+### 文本分词 (Tokenization)
+
+Transformers库使用一个 `Dataset` 对象来存储数据集。我们可以这样创建一个：
+
+```python
+from datasets import Dataset,DatasetDict
+ds = Dataset.from_pandas(df)
+```
+
+在notebook里它会这样显示：
+
+```text
+Dataset({
+    features: ['id', 'anchor', 'target', 'context', 'score', 'input'],
+    num_rows: 36473
+})
+```
+
+但是，我们不能直接把文本传给模型。一个深度学习模型期望的输入是数字，而不是英文句子！所以我们需要做两件事：
+
+1.  **分词 (Tokenization)**: 把每段文本切分成单词（或者，我们后面会看到，切分成 *tokens*）。
+2.  **数值化 (Numericalization)**: 把每个单词（或token）转换成一个数字。
+
+具体如何操作取决于我们使用的特定模型。所以我们首先需要选一个模型。有成千上万的模型可供选择，但对于几乎所有的NLP问题，一个合理的起点是使用下面这个（在你完成探索后，可以把 "small" 换成 "large" 来获得一个更慢但更精确的模型）：
+
+```python
+model_nm = 'microsoft/deberta-v3-small'
+```
+
+`AutoTokenizer` 会为给定的模型创建一个合适的分词器：
+
+```python
+from transformers import AutoTokenizer
+tokz = AutoTokenizer.from_pretrained(model_nm)
+```
+
+下面是一个分词器如何将文本切分成“tokens”的例子（tokens类似单词，但可以是更小的“子词”片段）：
+
+```python
+tokz.tokenize("G'day folks, I'm Jeremy from fast.ai!")
+```
+
+```text
+[' G', "'", 'day', ' folks', ',', ' I', "'", 'm', ' Jeremy', ' from', ' fast', '.', 'ai', '!']
+```
+
+不常见的词会被切分成几部分。一个新词的开始由 `     ` 符号表示：
+
+```python
+tokz.tokenize("A platypus is an ornithorhynchus anatinus.")
+```
+
+```text
+[' A', ' platypus', ' is', ' an', ' or', 'ni', 'tho', 'rhynch', 'us', ' an', 'at', 'inus', '.']
+```
+
+下面是一个简单的函数，用来对我们的输入进行分词：
+
+```python
+def tok_func(x): return tokz(x["input"])
+```
+
+为了在数据集的每一行上快速并行地运行这个函数，我们使用 `map`：
+
+```python
+tok_ds = ds.map(tok_func, batched=True)
+```
+
+这会在我们的数据集中增加一个名为 `input_ids` 的新项目。例如，这是我们数据第一行的输入文本和对应的ID：
+
+```python
+row = tok_ds[0]
+row['input'], row['input_ids']
+```
+
+```text
+('TEXT1: A47; TEXT2: abatement of pollution; ANC1: abatement',
+ [1, 54453, 435, 294, 336, 5753, 346, 54453, 445, 294, 47284, 265, 6435, 346, 23702, 435, 294, 47284, 2])
+```
+
+那么，这些ID是什么，它们从哪里来？秘密在于分词器里有一个叫做 `vocab` 的列表，它为每个可能的token字符串包含了一个唯一的整数。我们可以这样查询它，比如查找单词 "of" 对应的token：
+
+```python
+tokz.vocab[' of']
+```
+
+```text
+265
+```
+
+看看我们上面的 `input_ids`，我们确实看到了 `265` 如期出现。
+最后，我们需要准备我们的标签。Transformers总是假设你的标签列名叫 `labels`，但在我们的数据集中，它目前是 `score`。因此，我们需要重命名它：
+
+```python
+tok_ds = tok_ds.rename_columns({'score':'labels'})
+```
+
+### 测试集和验证集
+
+你可能已经注意到我们的目录里还有另一个文件：
+
+```python
+eval_df = pd.read_csv(path/'test.csv')
+eval_df.describe()
+```
+
+这是**测试集**。机器学习中最重要的思想之一可能就是拥有独立的训练集、验证集和测试集。
+
+#### 验证集
+
+为了解释其动机，我们从一个简单的例子开始，想象我们正在拟合一个模型，其真实关系是下面这个二次函数：
+
+```python
+def f(x): return -3*x**2 + 2*x + 20
+```
+
+一个模型可能**欠拟合**（under-fit）或**过拟合**（over-fit）。
+
+  * **欠拟合**：模型过于简单，无法捕捉数据的基本结构。就像试图用一条直线去拟合一条曲线。
+  * **过拟合**：模型过于复杂，它不仅学习了数据的基本结构，还学习了数据中的噪声。这导致它在见过的数据上表现很好，但在未见过的新数据上表现很差。
+
+那么，我们如何判断我们的模型是欠拟合、过拟合，还是“刚刚好”呢？我们使用**验证集**。这是一部分我们从训练中“保留”出来的数据——我们完全不让模型在训练时看到它。
+验证集**只**被用来评估我们的模型表现如何，它**永远不会**被用作训练模型的输入。
+
+Transformers使用 `DatasetDict` 来存放你的训练集和验证集。要创建一个包含25%数据作为验证集，75%作为训练集的数据集，使用 `train_test_split`：
+
+```python
+dds = tok_ds.train_test_split(0.25, seed=42)
+dds
+```
+
+```text
+DatasetDict({
+    train: Dataset({
+        features: ['id', 'anchor', 'target', 'context', 'labels', 'input', 'input_ids', 'token_type_ids', 'attention_mask'],
+        num_rows: 27354
+    })
+    test: Dataset({
+        features: ['id', 'anchor', 'target', 'context', 'labels', 'input', 'input_ids', 'token_type_ids', 'attention_mask'],
+        num_rows: 9119
+    })
+})
+```
+
+如你所见，这里的验证集被命名为 `test` 而不是 `validate`，所以要小心！
+
+#### 测试集
+
+那么验证集解释完了，也创建好了。那“测试集”又是做什么的呢？
+**测试集**是另一份从训练中保留出来的数据集。但它也从模型评估中被保留出来！你的模型在测试集上的准确率，只有在你完成了整个训练过程（包括尝试不同的模型、训练方法、数据处理等）之后，才会去检查一次。
+
+因为当你在验证集上尝试各种方法时，你可能会偶然发现一些能提升验证集指标的东西，但这些提升在实际中并没有普适性。你实际上是在“过拟合”你的验证集！
+
+这就是为什么我们保留一个测试集。Kaggle的公开排行榜就像一个你可以偶尔查看的测试集。但不要查得太频繁，否则你甚至会过拟合测试集！Kaggle还有第二个测试集，叫做“私有排行榜”，仅在比赛结束时用于最终排名。
+
+我们用 `eval` 作为测试集的名称，以避免与上面创建的名为 `test` 的验证集混淆。
+
+```python
+eval_df['input'] = 'TEXT1: ' + eval_df.context + '; TEXT2: ' + eval_df.target + '; ANC1: ' + eval_df.anchor
+eval_ds = Dataset.from_pandas(eval_df).map(tok_func, batched=True)
+```
+
+### 评估指标与相关性
+
+在Kaggle中，我们使用什么指标非常明确：Kaggle会告诉你！根据本次比赛的评估页面，“提交结果将根据预测的相似度分数与实际分数之间的**皮尔逊相关系数**进行评估。”
+
+这个系数通常用 `r` 表示，取值范围在-1（完全负相关）到+1（完全正相关）之间。
+
+Transformers期望指标以 `dict` 形式返回，这样训练器就知道该用什么标签。我们创建一个函数来完成这个任务：
+
+```python
+import numpy as np
+def corr(x,y): return np.corrcoef(x,y)[0][1]
+def corr_d(eval_pred): return {'pearson': corr(*eval_pred)}
+```
+
+### 训练模型
+
+要在Transformers中训练模型，我们需要以下组件：
+
+```python
+from transformers import TrainingArguments,Trainer
+```
+
+我们选择一个适合我们GPU的批量大小（batch size），以及一个较小的训练轮数（epochs），这样可以快速进行实验：
+
+```python
+bs = 128
+epochs = 4
+```
+
+最重要的超参数是学习率。你需要通过反复试验来找到一个最大但又不会导致训练失败的值。
+
+```python
+lr = 8e-5
+```
+
+Transformers使用 `TrainingArguments` 类来设置参数。
+
+```python
+args = TrainingArguments('outputs', learning_rate=lr, warmup_ratio=0.1, lr_scheduler_type='cosine', fp16=True,
+    evaluation_strategy="epoch", per_device_train_batch_size=bs, per_device_eval_batch_size=bs*2,
+    num_train_epochs=epochs, weight_decay=0.01, report_to='none')
+```
+
+现在我们可以创建我们的模型和 `Trainer`，这是一个将数据和模型结合在一起的类：
+
+```python
+from transformers import AutoModelForSequenceClassification
+model = AutoModelForSequenceClassification.from_pretrained(model_nm, num_labels=1)
+trainer = Trainer(model, args, train_dataset=dds['train'], eval_dataset=dds['test'],
+                  tokenizer=tokz, compute_metrics=corr_d)
+```
+
+现在，开始训练我们的模型！
+
+```python
+trainer.train();
+```
+
+```text
+Epoch | Training Loss | Validation Loss | Pearson
+--- | --- | --- | ---
+1 | No log | 0.024492 | 0.800443
+2 | No log | 0.022003 | 0.826113
+3 | 0.041600 | 0.021423 | 0.834453
+4 | 0.041600 | 0.022275 | 0.834767
+```
+
+关键要看上表中的 "Pearson" 值。如你所见，它在不断增加，并且已经超过了0.8。这是个好消息！我们现在可以获取在测试集上的预测结果了：
+
+```python
+preds = trainer.predict(eval_ds).predictions.astype(float)
+```
+
+注意 - 我们的一些预测值小于0或大于1！这再次显示了检查数据的重要性。我们来修正这些越界的预测：
+
+```python
+preds = np.clip(preds, 0, 1)
+```
+
+好了，现在我们准备好创建我们的提交文件了。
+
+```python
+import datasets
+submission = datasets.Dataset.from_dict({
+    'id': eval_ds['id'],
+    'score': preds.flatten() # 使用flatten()来确保维度正确
+})
+
+submission.to_csv('submission.csv', index=False)
+```
+
+### 尾声
+
+感谢阅读！这对我是个小实验——我从未在Kaggle上写过“绝对初学者”的指南。希望你喜欢！如果你喜欢，请不吝点赞。有任何问题或想法，也请随时发表评论。
+
+```
+```
 
 
 

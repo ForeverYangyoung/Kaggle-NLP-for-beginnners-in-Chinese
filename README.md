@@ -47,4 +47,64 @@ Kaggle 对于有志于成为数据科学家或任何希望提升机器学习技�
 <img width="679" height="580" alt="image" src="https://github.com/user-attachments/assets/f0130d8a-8ed6-408e-a634-86739257d5ca" />
 
 
+### 在你自己的电脑上使用Kaggle数据
+
+我们需要根据当前运行环境是在Kaggle上还是在本地，来写一些稍有不同的代码。因此，我们用下面这个变量来追踪运行环境：
+
+```python
+import os
+iskaggle = os.environ.get('KAGGLE_KERNEL_RUN_TYPE', '')
+```
+
+Kaggle 每周会限制你使用GPU的时间。这个限制很宽松，但你可能还是会觉得不够用！在这种情况下，你会想要用自己的GPU服务器，或者像 Colab、Paperspace Gradient、SageMaker Studio Lab 这样的云服务器（它们都有免费方案）。要做到这一点，你就需要能从Kaggle上下载数据集。
+
+下载Kaggle数据集最简单的方法是使用 **Kaggle API**。你可以在 notebook 的单元格里运行下面的命令来用 `pip` 安装它：
+
+```python
+!pip install kaggle
+```
+
+你需要一个 **API 密钥**才能使用 Kaggle API。要获取密钥，请在Kaggle网站上点击你的头像，选择 “My Account”，然后点击 “Create New API Token”。这会下载一个名为 `kaggle.json` 的文件到你的电脑上。你需要把这个密钥复制到你的GPU服务器。具体操作是：打开你下载的文件，复制里面的内容，然后粘贴到下面这个单元格里（例如，`creds = '{"username":"xxx","key":"xxx"}'`）：
+
+```python
+creds = ''
+```
+
+然后执行这个单元格（只需要运行一次）：
+
+```python
+# 推荐使用 pathlib.Path 来处理Python中的路径
+from pathlib import Path
+
+cred_path = Path('~/.kaggle/kaggle.json').expanduser()
+if not cred_path.exists():
+    cred_path.parent.mkdir(exist_ok=True)
+    cred_path.write_text(creds)
+    cred_path.chmod(0o600)
+```
+
+现在你就可以从Kaggle下载数据集了。
+
+```python
+path = Path('us-patent-phrase-to-phrase-matching')
+```
+
+然后使用Kaggle API将数据集下载到指定路径并解压：
+
+```python
+if not iskaggle and not path.exists():
+    import zipfile,kaggle
+    kaggle.api.competition_download_cli(str(path))
+    zipfile.ZipFile(f'{path}.zip').extractall(path)
+```
+
+> **提示**：你可以很方便地从Kaggle下载notebook，然后上传到其他的云服务上。所以，如果你的Kaggle GPU额度快用完了，可以试试这个方法！
+
+
+
+
+
+
+
+
 
